@@ -92,7 +92,12 @@ approximated. There are four possible basic versions:
 | **Direct**   | **✓**       | **✓**           |
 | **Inverse**  | **✓**       | **X**           |
 
-### Line Search vs. Trust Region
+Implemented Optimizers include:
+- `BFGS`
+- `DavidonFletcherPowell`
+- `Brodyen`
+
+#### Line Search vs. Trust Region
 [Line search methods](https://en.wikipedia.org/wiki/Line_search) determine step direction first,
 then (attempt to) determine the optimal step size, usually in an inexact fashion. This inexact
 optimality is usually qualified by conditions such as the
@@ -111,7 +116,7 @@ These require a solver for the so-called "trust region subproblem" -- only the
 [Conjugate-Gradient Steihaug](https://optimization.cbe.cornell.edu/index.php?title=Trust-region_methods)
 method has been implemented, although stubs exist for the Cauchy Point and Dogleg methods.
 
-### Direct vs. Inverse Quasi-Newton Methods
+#### Direct vs. Inverse Quasi-Newton Methods
 Direct QN methods "directly" form the Hessian $B$ and then solve it via an appropriate Krylov
 solver, subject to the properties of the Hessian (e.g. hermitian or not, positive definite or not,
 etc.).
@@ -120,9 +125,7 @@ Inverse methods form the inverse Hessian $H=B^{-1}$ and require no solver to inv
 
 
 #### Direct Line Search (`QuasiNewton`)
-
 Arguments:
-
 - `params`: The model parameters
 - `lr`: The learning rate/maximum stepsize. If no line search is used, it functions as a damping coefficient. If one is used, it is the starting/maximum value of the backtracking line search
 - `max_newton`: The maximum number of newton steps that may be taken per optimizer step.
@@ -132,10 +135,109 @@ Arguments:
 - `krylov_tol`: The absolute value of the residual in the Krylov solver before it is considered converged
 - `matrix_free_memory`: (Optional) The number of prior steps to retain. If None, the memory will grow without bound (not recommended).
 - `line_search_spec`: (Optional) A dataclass defining the specifications for the line search algorithm.
-- `mu`: the value to use for the finite difference in the Hessian-vector approximation.
+- `mu`: The value to use for the finite difference in the Hessian-vector approximation.
 - `verbose`: Enables some additional print statements under invalid conditions.
 
-#### Direct Trust Region
+#### Direct Trust Region (`QuasiNewtonTrust`)
+Arguments:
+- `params`: The model parameters
+- `trust_region`: A TrustRegionSpec object dictating the trust region specifications
+- `lr`: A damping factor for your step size (recommended to leave at 1)
+- `max_newton`: The maximum number of newton steps that may be taken per optimizer step.
+- `abs_newton_tol`: The maximum absolute value of the grad norm before the optimizer is considered converged
+- `rel_newton_tol`: The relative absolute value of the grad norm before the optimizer is considered converged
+- `matrix_free_memory`: (Optional) The number of prior steps to retain. If None, the memory will grow without bound (not recommended).
+- `mu`: The value to use for the finite difference in the Hessian-vector approximation.
+
+#### Inverse Line Search and Trust Region (`InverseQuasiNewton`)
+Arguments:
+- `params`: The model parameters
+- `lr`: The learning rate/maximum stepsize. If no line search is used, it functions as a damping coefficient. If one is used, it is the starting/maximum value of the backtracking line search
+- `max_newton`: The maximum number of newton steps that may be taken per optimizer step.
+- `abs_newton_tol`: The maximum absolute value of the grad norm before the optimizer is considered converged
+- `rel_newton_tol`: The relative absolute value of the grad norm before the optimizer is considered converged
+- `matrix_free_memory`: (Optional) The number of prior steps to retain. If None, the memory will grow without bound (not recommended).
+- `line_search_spec`: (Optional) A dataclass defining the specifications for the line search algorithm.
+- `trust_region`: A TrustRegionSpec object dictating the trust region specifications
+- `verbose`: Enables some additional print statements under invalid conditions.
+
+**Note**: breaking with the other classes, this class can accept either a `LineSearchSpec` or `TrustRegionSpec` (but not both!). However, as the trust region is not implemented for this class, it is functionally only a line search optimizer.
+
+## Other Classes of Note
+### `LineSearchSpec`
+A frozen dataclass with parameters:
+- `max_searches`
+- `extrapolation_factor` (note this should be $<1$)
+- `sufficient_decrease`
+- `curvature_constant` (Optional)
+
+### `TrustRegionSpec`
+A frozen dataclass with parameters:
+- `initial_radius`: Initial trust region radius
+- `max_radius`: Maximum trust region radius
+- `nabla0`: see below
+- `nabla1`: see below
+- `nabla2`: see below
+- `shrink_factor`: Factor by which the radius shrinks (should be $∈(0,1)$)
+- `growth_factor`: Factor by which the radius grows (should be $∈(1,∞)$)
+- `trust_region_subproblem_solver`: Which subproblem solver to use (only `cg` is currently valid)
+- `trust_region_subproblem_tol`: The tolerance for subproblem convergence
+- `trust_region_subproblem_iter`: A limit on how many iterations the solver can use (Optional)
+
+#### Nabla values
+These terms are actually misnamed and should be called "eta".
+
+These set the limits for whether the quadratic model of the method is "good". `nabla0` is the
+value below which an abject failure occurs and the step is rejected entirely.
+`nabla1` is the value below which the step is accepted but the radius is decreased. `nabla2` is the value above which the step is accepted and the radius is increased.
+
+Note that $0\leq\eta_0 \leq \eta_1 \leq \eta_2 \leq 1$; in practice, it suggested that
+$\eta_0 \ll 1$ ("very small", on the order of 1e-4) and that $\eta_0 < \eta_1 < \eta_2 < 1$.
+
+### Solver
+Linear system solvers (i.e. $Ax=b$) that support functor behavior with inputs:
+- `A`: a matrix(-like) object supporting matvec multiplication
+- `x0`: The initial guess
+- `b`: the `b` vector
+
+Arguments:
+- `max_iter`: Maximum iterations the solver can take
+- `tol`: an absolute tolerance for convergence
+
+#### Implemented Solvers
+- Conjugate Gradient
+- Conjugate Residual
+
+Other solvers (such as MINRES, GMRES, Biconjugate Gradient, etc.) could be added if desired.
+
+### (Inverse) Matrix-Free Operators
+The basis of the QN methods, this object acts like a matrix and accepts updates using the
+current gradient, the last gradient, and the change in $x$. Also supports constructing a full
+matrix by multiplying by each basis vector and stacking the results (for debugging purposes).
+
+
+`MatrixFreeOperator` Arguments:
+- `B0p` A callable accepting a tensor and returning a tensor. Should be the closure used by the second order methods if possible. If this is not available
+at construction, add it later using the `change_B0p` method.
+- `n`: the size of the memory. If none, it is unlimited.
+
+`InverseMatrixFreeOperator` Arguments:
+- `n`: the size of the memory. If none, it is unlimited.
+
+There are also matrix operators, which actually form the full matrix. These are not suggested except for small optimization problems.
+
+#### Implemented Operators:
+- BFGS
+- SR1
+- DFP
+
+Note that, technically, the SR1 Dual is also available -- its inverse **is** its dual.
+
+## Possible Improvements
+- [ ] Implement Trust region inverse QN method(s).
+- [ ] Refactor QN classes to reduce duplicated code. Consider Multiple inheritance to match the 2x2 matrix of line search vs. trust region and direct vs. inverse
+- [ ] Rename the `nabla` variables to `eta`; the author was lacking sleep when identifying the greek letter used in his sources
+- [ ] Update the Matrix Free operators to use the newer `__matmul__` dunder method instead of just `__mul__`
 
 ## Acknowledgements
 This work was supported by Pacific Northwest National Lab, the University of Washington, and
